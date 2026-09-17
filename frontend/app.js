@@ -2,6 +2,7 @@
    TaskFlow — Frontend Application Logic
    Handles: API calls, Kanban drag-drop, task rendering,
    workload balancing, modals, filters, toasts
+   Falls back to localStorage when backend unavailable.
    ============================================================ */
 
 const API = 'http://localhost:3001/api';
@@ -17,21 +18,172 @@ let state = {
   dragTaskId: null,
   editingTaskId: null,
   selectedAssigneeIds: new Set(),
+  useLocalFallback: false,
+};
+
+// ============================================================
+// LOCAL STORAGE MOCK (Fallback when backend is unreachable)
+// ============================================================
+const SEED = {
+  projects: [
+    { id: 1, name: 'Product Launch', description: 'Q4 product launch coordination', created_at: new Date().toISOString() },
+    { id: 2, name: 'Website Redesign', description: 'Complete overhaul of company website', created_at: new Date().toISOString() },
+  ],
+  users: [
+    { id: 1, name: 'Alice Johnson', email: 'alice@team.com', avatar_color: '#6366f1', created_at: new Date().toISOString() },
+    { id: 2, name: 'Bob Martinez', email: 'bob@team.com', avatar_color: '#ec4899', created_at: new Date().toISOString() },
+    { id: 3, name: 'Carol White', email: 'carol@team.com', avatar_color: '#10b981', created_at: new Date().toISOString() },
+    { id: 4, name: 'David Kim', email: 'david@team.com', avatar_color: '#f59e0b', created_at: new Date().toISOString() },
+    { id: 5, name: 'Eva Chen', email: 'eva@team.com', avatar_color: '#3b82f6', created_at: new Date().toISOString() },
+  ],
+  tasks: [
+    { id: 1, project_id: 1, title: 'Design mockups', description: 'Create Figma mockups for all screens', priority: 'high', status: 'todo', due_date: '2026-09-25', created_at: new Date().toISOString(), assignees: [{ id: 1, name: 'Alice Johnson', email: 'alice@team.com', avatar_color: '#6366f1' }] },
+    { id: 2, project_id: 1, title: 'Setup CI/CD pipeline', description: 'Configure GitHub Actions for deployment', priority: 'medium', status: 'inprogress', due_date: '2026-09-20', created_at: new Date().toISOString(), assignees: [{ id: 2, name: 'Bob Martinez', email: 'bob@team.com', avatar_color: '#ec4899' }] },
+    { id: 3, project_id: 1, title: 'Write unit tests', description: 'Cover all API endpoints with Jest tests', priority: 'low', status: 'todo', due_date: '2026-09-28', created_at: new Date().toISOString(), assignees: [] },
+    { id: 4, project_id: 1, title: 'Database optimization', description: 'Index frequently queried columns', priority: 'high', status: 'done', due_date: '2026-09-15', created_at: new Date().toISOString(), assignees: [{ id: 4, name: 'David Kim', email: 'david@team.com', avatar_color: '#f59e0b' }] },
+    { id: 5, project_id: 1, title: 'User authentication', description: 'Implement JWT-based auth flow', priority: 'high', status: 'inprogress', due_date: '2026-09-22', created_at: new Date().toISOString(), assignees: [{ id: 1, name: 'Alice Johnson', email: 'alice@team.com', avatar_color: '#6366f1' }] },
+    { id: 6, project_id: 2, title: 'Content audit', description: 'Review and update all website copy', priority: 'medium', status: 'todo', due_date: '2026-09-30', created_at: new Date().toISOString(), assignees: [] },
+    { id: 7, project_id: 2, title: 'SEO optimization', description: 'Fix meta tags and improve page speed', priority: 'high', status: 'inprogress', due_date: '2026-09-19', created_at: new Date().toISOString(), assignees: [{ id: 3, name: 'Carol White', email: 'carol@team.com', avatar_color: '#10b981' }] },
+    { id: 8, project_id: 2, title: 'Mobile responsiveness', description: 'Ensure all pages work on mobile', priority: 'medium', status: 'done', due_date: '2026-09-14', created_at: new Date().toISOString(), assignees: [{ id: 5, name: 'Eva Chen', email: 'eva@team.com', avatar_color: '#3b82f6' }] },
+  ],
+};
+
+function lsGet(key) {
+  try {
+    const raw = localStorage.getItem(`taskflow_${key}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function lsSet(key, val) {
+  try { localStorage.setItem(`taskflow_${key}`, JSON.stringify(val)); } catch {}
+}
+
+function lsInit() {
+  if (!lsGet('projects')) lsSet('projects', SEED.projects);
+  if (!lsGet('users'))    lsSet('users',    SEED.users);
+  if (!lsGet('tasks'))    lsSet('tasks',    SEED.tasks);
+  if (!lsGet('nextId'))   lsSet('nextId',   100);
+}
+
+function lsNextId() {
+  const id = (lsGet('nextId') || 100) + 1;
+  lsSet('nextId', id);
+  return id;
+}
+
+// ---- Local CRUD helpers ----
+const Local = {
+  getProjects: () => lsGet('projects') || [],
+  getUsers:    () => lsGet('users')    || [],
+  getTasks:    () => lsGet('tasks')    || [],
+
+  createProject(data) {
+    const projects = this.getProjects();
+    const p = { id: lsNextId(), ...data, created_at: new Date().toISOString() };
+    projects.unshift(p);
+    lsSet('projects', projects);
+    return p;
+  },
+  deleteProject(id) {
+    lsSet('projects', this.getProjects().filter(p => p.id !== id));
+    lsSet('tasks', this.getTasks().filter(t => t.project_id !== id));
+  },
+
+  createUser(data) {
+    const users = this.getUsers();
+    if (users.find(u => u.email === data.email)) throw new Error('Email already exists');
+    const u = { id: lsNextId(), ...data, created_at: new Date().toISOString() };
+    users.push(u);
+    lsSet('users', users);
+    return u;
+  },
+
+  createTask(data) {
+    const tasks = this.getTasks();
+    const users = this.getUsers();
+    const assignees = (data.assignee_ids || []).map(uid => users.find(u => u.id === uid)).filter(Boolean);
+    const t = {
+      id: lsNextId(),
+      project_id: data.project_id || null,
+      title: data.title,
+      description: data.description || '',
+      priority: data.priority || 'medium',
+      status: data.status || 'todo',
+      due_date: data.due_date || null,
+      created_at: new Date().toISOString(),
+      assignees,
+    };
+    tasks.unshift(t);
+    lsSet('tasks', tasks);
+    return t;
+  },
+
+  updateTask(id, data) {
+    const tasks = this.getTasks();
+    const users = this.getUsers();
+    const idx = tasks.findIndex(t => t.id === id);
+    if (idx === -1) throw new Error('Task not found');
+    if (data.assignee_ids !== undefined) {
+      data.assignees = data.assignee_ids.map(uid => users.find(u => u.id === uid)).filter(Boolean);
+    }
+    Object.assign(tasks[idx], data);
+    lsSet('tasks', tasks);
+    return tasks[idx];
+  },
+
+  deleteTask(id) {
+    lsSet('tasks', this.getTasks().filter(t => t.id !== id));
+  },
+
+  getWorkload() {
+    const users = this.getUsers();
+    const tasks = this.getTasks();
+    return users.map(u => {
+      const myTasks = tasks.filter(t => t.assignees && t.assignees.some(a => a.id === u.id));
+      const inprogress_count = myTasks.filter(t => t.status === 'inprogress').length;
+      const todo_count = myTasks.filter(t => t.status === 'todo').length;
+      const done_count = myTasks.filter(t => t.status === 'done').length;
+      return {
+        ...u,
+        todo_count, inprogress_count, done_count,
+        total_tasks: myTasks.length,
+        burnout: inprogress_count > 5,
+      };
+    }).sort((a, b) => b.inprogress_count - a.inprogress_count);
+  },
 };
 
 // ============================================================
 // BOOTSTRAP
 // ============================================================
 document.addEventListener('DOMContentLoaded', async () => {
-  await Promise.all([
-    loadProjects(),
-    loadUsers(),
-  ]);
+  // Check if backend is reachable
+  try {
+    const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error();
+    state.useLocalFallback = false;
+  } catch {
+    state.useLocalFallback = true;
+    lsInit();
+    showBanner('Running in offline mode — data stored locally in your browser.');
+  }
+
+  await Promise.all([loadProjects(), loadUsers()]);
   await loadTasks();
   await loadWorkload();
   startWorkloadPolling();
   setupColorPicker();
 });
+
+function showBanner(msg) {
+  const b = document.createElement('div');
+  b.style.cssText = `position:fixed;top:0;left:0;right:0;z-index:9000;background:#f59e0b;color:#000;
+    text-align:center;padding:7px 12px;font-size:0.8rem;font-weight:600;cursor:pointer;`;
+  b.textContent = `⚡ ${msg} (Click to dismiss)`;
+  b.onclick = () => b.remove();
+  document.body.prepend(b);
+}
 
 // ============================================================
 // API HELPERS
@@ -58,7 +210,11 @@ async function apiFetch(path, options = {}) {
 // ============================================================
 async function loadProjects() {
   try {
-    state.projects = await apiFetch('/projects');
+    if (state.useLocalFallback) {
+      state.projects = Local.getProjects();
+    } else {
+      state.projects = await apiFetch('/projects');
+    }
     renderProjectList();
     populateProjectSelect();
   } catch {}
@@ -66,28 +222,42 @@ async function loadProjects() {
 
 async function loadUsers() {
   try {
-    state.users = await apiFetch('/users');
+    if (state.useLocalFallback) {
+      state.users = Local.getUsers();
+    } else {
+      state.users = await apiFetch('/users');
+    }
   } catch {}
 }
 
 async function loadTasks() {
-  const params = new URLSearchParams();
-  if (state.activeFilter !== 'all') params.set('priority', state.activeFilter);
-  if (state.activeProjectId) params.set('project_id', state.activeProjectId);
   try {
-    state.tasks = await apiFetch(`/tasks?${params}`);
+    if (state.useLocalFallback) {
+      let tasks = Local.getTasks();
+      if (state.activeFilter !== 'all') tasks = tasks.filter(t => t.priority === state.activeFilter);
+      if (state.activeProjectId) tasks = tasks.filter(t => t.project_id === state.activeProjectId);
+      state.tasks = tasks;
+    } else {
+      const params = new URLSearchParams();
+      if (state.activeFilter !== 'all') params.set('priority', state.activeFilter);
+      if (state.activeProjectId) params.set('project_id', state.activeProjectId);
+      state.tasks = await apiFetch(`/tasks?${params}`);
+    }
     renderBoard();
   } catch {}
 }
 
 async function loadWorkload() {
   try {
-    state.workload = await apiFetch('/users/workload/all');
+    if (state.useLocalFallback) {
+      state.workload = Local.getWorkload();
+    } else {
+      state.workload = await apiFetch('/users/workload/all');
+    }
     renderWorkload();
   } catch {}
 }
 
-// Poll workload every 10 seconds for live burnout updates
 function startWorkloadPolling() {
   setInterval(async () => {
     await loadWorkload();
@@ -113,8 +283,6 @@ function renderProjectList() {
       </div>`;
   });
   container.innerHTML = html;
-
-  // Update task-form project select
   populateProjectSelect();
 }
 
@@ -236,7 +404,7 @@ function getDueDateInfo(dueDateStr) {
 // ============================================================
 function renderWorkload() {
   const container = document.getElementById('team-workload-list');
-  if (state.workload.length === 0) {
+  if (!state.workload || state.workload.length === 0) {
     container.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted)">No team members yet.</div>';
     return;
   }
@@ -244,13 +412,13 @@ function renderWorkload() {
   const maxTasks = Math.max(...state.workload.map(u => u.total_tasks), 1);
 
   container.innerHTML = state.workload.map(user => {
-    const isBurnout = user.burnout; // server computed: inprogress > 5
+    const isBurnout = user.burnout; // server/local computed: inprogress_count > 5
     const pct = Math.round((user.total_tasks / maxTasks) * 100);
     return `
       <div class="team-member-row" id="member-${user.id}">
         <div class="avatar ${isBurnout ? 'burnout' : ''}"
              style="background:${isBurnout ? '#ef4444' : user.avatar_color}"
-             title="${escHtml(user.name)}${isBurnout ? ' ⚠ Overloaded!' : ''}">
+             title="${escHtml(user.name)}${isBurnout ? ' ⚠ Overloaded! (>5 In Progress)' : ''}">
           ${getInitials(user.name)}
         </div>
         <div class="member-info">
@@ -277,7 +445,7 @@ function onDragStart(event, taskId) {
   const card = document.getElementById(`card-${taskId}`);
   if (card) card.classList.add('dragging');
   event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('text/plain', taskId);
+  event.dataTransfer.setData('text/plain', String(taskId));
 }
 
 function onDragEnd(event) {
@@ -285,19 +453,16 @@ function onDragEnd(event) {
     const card = document.getElementById(`card-${state.dragTaskId}`);
     if (card) card.classList.remove('dragging');
   }
-  // Clean up drag-over states
   document.querySelectorAll('.kanban-column').forEach(col => col.classList.remove('drag-over'));
 }
 
 function onDragOver(event) {
   event.preventDefault();
   event.dataTransfer.dropEffect = 'move';
-  const col = event.currentTarget;
-  col.classList.add('drag-over');
+  event.currentTarget.classList.add('drag-over');
 }
 
 function onDragLeave(event) {
-  // Only remove if leaving the column itself, not a child
   if (!event.currentTarget.contains(event.relatedTarget)) {
     event.currentTarget.classList.remove('drag-over');
   }
@@ -312,19 +477,23 @@ async function onDrop(event, newStatus) {
   const task = state.tasks.find(t => t.id === taskId);
   if (!task || task.status === newStatus) return;
 
-  // Optimistic UI update
-  task.status = newStatus;
+  const oldStatus = task.status;
+  task.status = newStatus; // Optimistic update
   renderBoard();
 
   try {
-    await apiFetch(`/tasks/${taskId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: newStatus }),
-    });
-    await loadWorkload(); // refresh burnout panel
+    if (state.useLocalFallback) {
+      Local.updateTask(taskId, { status: newStatus });
+    } else {
+      await apiFetch(`/tasks/${taskId}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: newStatus }),
+      });
+    }
+    await loadWorkload();
     showToast(`Task moved to ${statusLabel(newStatus)}`, 'success');
   } catch {
-    // Revert on failure
+    task.status = oldStatus; // Revert
     await loadTasks();
   }
   state.dragTaskId = null;
@@ -462,11 +631,12 @@ function openEditTask(taskId) {
 
 function renderAssigneePicker() {
   const container = document.getElementById('assignee-picker');
-  if (state.users.length === 0) {
+  const users = state.useLocalFallback ? Local.getUsers() : state.users;
+  if (!users || users.length === 0) {
     container.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted)">No team members yet. Add some first.</span>';
     return;
   }
-  container.innerHTML = state.users.map(u => `
+  container.innerHTML = users.map(u => `
     <div class="assignee-chip ${state.selectedAssigneeIds.has(u.id) ? 'selected' : ''}"
          id="chip-${u.id}"
          onclick="toggleAssignee(${u.id})"
@@ -504,12 +674,22 @@ async function submitTaskForm(event) {
 
   try {
     const editId = document.getElementById('task-edit-id').value;
-    if (editId) {
-      await apiFetch(`/tasks/${editId}`, { method: 'PUT', body: JSON.stringify(payload) });
-      showToast('Task updated!', 'success');
+    if (state.useLocalFallback) {
+      if (editId) {
+        Local.updateTask(parseInt(editId), payload);
+        showToast('Task updated!', 'success');
+      } else {
+        Local.createTask(payload);
+        showToast('Task created!', 'success');
+      }
     } else {
-      await apiFetch('/tasks', { method: 'POST', body: JSON.stringify(payload) });
-      showToast('Task created!', 'success');
+      if (editId) {
+        await apiFetch(`/tasks/${editId}`, { method: 'PUT', body: JSON.stringify(payload) });
+        showToast('Task updated!', 'success');
+      } else {
+        await apiFetch('/tasks', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('Task created!', 'success');
+      }
     }
     closeModal('task-modal');
     await loadTasks();
@@ -524,7 +704,11 @@ async function submitTaskForm(event) {
 async function deleteTask(taskId) {
   if (!confirm('Are you sure you want to delete this task?')) return;
   try {
-    await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
+    if (state.useLocalFallback) {
+      Local.deleteTask(taskId);
+    } else {
+      await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
+    }
     showToast('Task deleted', 'info');
     await loadTasks();
     await loadWorkload();
@@ -548,12 +732,19 @@ async function submitUserForm(event) {
     avatar_color: document.getElementById('user-color').value,
   };
   try {
-    await apiFetch('/users', { method: 'POST', body: JSON.stringify(payload) });
+    if (state.useLocalFallback) {
+      Local.createUser(payload);
+    } else {
+      await apiFetch('/users', { method: 'POST', body: JSON.stringify(payload) });
+    }
     showToast(`${payload.name} added to team!`, 'success');
     closeModal('user-modal');
     await loadUsers();
     await loadWorkload();
-  } catch {}
+  } catch (err) {
+    // error already shown by apiFetch or thrown by Local
+    showToast(err.message || 'Failed to add user', 'error');
+  }
 }
 
 function setupColorPicker() {
@@ -581,7 +772,11 @@ async function submitProjectForm(event) {
     description: document.getElementById('project-desc').value.trim(),
   };
   try {
-    await apiFetch('/projects', { method: 'POST', body: JSON.stringify(payload) });
+    if (state.useLocalFallback) {
+      Local.createProject(payload);
+    } else {
+      await apiFetch('/projects', { method: 'POST', body: JSON.stringify(payload) });
+    }
     showToast(`Project "${payload.name}" created!`, 'success');
     closeModal('project-modal');
     await loadProjects();
@@ -626,11 +821,7 @@ function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container');
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  const icons = {
-    success: '✓',
-    error: '✕',
-    info: 'ℹ',
-  };
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
   toast.innerHTML = `<span>${icons[type] || 'ℹ'}</span> <span>${escHtml(message)}</span>`;
   container.appendChild(toast);
   setTimeout(() => {
