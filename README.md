@@ -150,9 +150,20 @@ Or open **pgAdmin** → Query Tool → paste `schema.sql` → Run.
 
 ### 4. Start the Backend
 
-```bash
+Open a terminal and navigate to the backend directory:
+
+**Windows (PowerShell):**
+```powershell
 cd backend
-npm start
+npm run dev
+# or for production: npm start
+```
+*(Note: In Windows PowerShell 5.1, run commands sequentially or separate with `;` instead of `&&`)*
+
+**Linux / macOS / Git Bash / CMD:**
+```bash
+cd backend && npm run dev
+# or for production: npm start
 ```
 
 Expected output:
@@ -168,11 +179,28 @@ Expected output:
 
 ### 5. Start the Frontend
 
+Open a **second terminal** and serve the static files:
+
+**Windows (PowerShell):**
+```powershell
+cd frontend
+npx -y serve .
+```
+
+**Linux / macOS / Git Bash / CMD:**
+```bash
+cd frontend && npx -y serve .
+```
+
+*Alternative using `http-server`:*
 ```bash
 npx http-server frontend -p 8080 --cors
 ```
 
-Open in browser: **http://127.0.0.1:8080**
+Open in your browser:
+- **http://localhost:3000** (or the port displayed by `serve`)
+- or **http://127.0.0.1:8080** (if using `http-server`)
+- or open [`frontend/index.html`](frontend/index.html) directly in your browser.
 
 ---
 
