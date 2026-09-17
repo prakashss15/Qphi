@@ -258,10 +258,39 @@ async function loadWorkload() {
   } catch {}
 }
 
+// ── Instant workload recompute from in-memory state (no API call) ──
+// Called immediately on drag-drop for real-time sidebar updates
+function computeWorkloadFromState() {
+  const allTasks = state.useLocalFallback ? Local.getTasks() : state.tasks;
+  const users = state.useLocalFallback ? Local.getUsers() : state.users;
+
+  const workload = users.map(u => {
+    // Include tasks from ALL statuses for workload (not filtered view)
+    const myTasks = allTasks.filter(t =>
+      Array.isArray(t.assignees) && t.assignees.some(a => a.id === u.id)
+    );
+    const inprogress_count = myTasks.filter(t => t.status === 'inprogress').length;
+    const todo_count       = myTasks.filter(t => t.status === 'todo').length;
+    const done_count       = myTasks.filter(t => t.status === 'done').length;
+    return {
+      ...u,
+      todo_count,
+      inprogress_count,
+      done_count,
+      total_tasks: myTasks.length,
+      burnout: inprogress_count > 5,  // Business rule: >5 in-progress = burnout
+    };
+  }).sort((a, b) => b.inprogress_count - a.inprogress_count);
+
+  state.workload = workload;
+  renderWorkload();
+}
+
 function startWorkloadPolling() {
+  // Poll every 5s to keep sidebar in sync with backend
   setInterval(async () => {
     await loadWorkload();
-  }, 10000);
+  }, 5000);
 }
 
 // ============================================================
@@ -478,8 +507,11 @@ async function onDrop(event, newStatus) {
   if (!task || task.status === newStatus) return;
 
   const oldStatus = task.status;
-  task.status = newStatus; // Optimistic update
-  renderBoard();
+  task.status = newStatus; // Optimistic update in-memory
+
+  // ── INSTANT updates — no API wait ──
+  renderBoard();               // update Kanban columns + counters immediately
+  computeWorkloadFromState();  // update team sidebar immediately
 
   try {
     if (state.useLocalFallback) {
@@ -693,7 +725,8 @@ async function submitTaskForm(event) {
     }
     closeModal('task-modal');
     await loadTasks();
-    await loadWorkload();
+    computeWorkloadFromState(); // instant sidebar update
+    loadWorkload();             // sync with backend in background
   } catch {}
   finally {
     btn.disabled = false;
@@ -711,7 +744,8 @@ async function deleteTask(taskId) {
     }
     showToast('Task deleted', 'info');
     await loadTasks();
-    await loadWorkload();
+    computeWorkloadFromState(); // instant sidebar update
+    loadWorkload();             // sync with backend in background
   } catch {}
 }
 
