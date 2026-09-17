@@ -105,12 +105,18 @@ cd Qphi
 
 ```bash
 cd backend
-npm install
+npm install --ignore-scripts
 ```
+
+> 💡 **Tip (Windows):** `--ignore-scripts` tells npm to use `better-sqlite3`'s bundled pre-compiled binaries instead of attempting to compile C++ source via `node-gyp` (which requires Visual Studio C++ Build Tools).
 
 Copy the environment file:
 
 ```bash
+# Windows PowerShell:
+Copy-Item .env.example .env
+
+# Mac / Linux:
 cp .env.example .env
 ```
 
